@@ -9,3 +9,6 @@ __pycache__
 env/
 pymdp.egg-info
 inferactively_pymdp.egg-info
+
+# Meditation simulation outputs (local only)
+examples/meditation/outputs/
