@@ -606,3 +606,260 @@ def entropy(A):
         H = - np.diag(np.matmul(A_merged.T, np.log(A_merged + EPS_VAL)))
         entropies[i] = H.reshape(*A[i].shape[1:])
     return entropies
+
+
+# =============================================================================
+# Likelihood Precision (ζ) Belief Updating
+# Based on Parr et al. (2022) "Active Inference" Appendix B
+#
+# NAMING CONVENTION:
+#   ζ (zeta) = likelihood/sensory precision (modulates A matrix)
+#   γ (gamma) = policy precision (modulates expected free energy) [used elsewhere in pymdp]
+#
+# This follows Parr et al. (2022) where ζ denotes sensory precision.
+# =============================================================================
+
+def scale_likelihood(A, zeta):
+    """
+    Apply precision weighting to a likelihood matrix.
+
+    Computes A_ζ = softmax(ζ * ln(A)) which scales the "sharpness"
+    of the likelihood mapping. Higher ζ means more precise/peaked
+    likelihood, lower ζ means flatter/less informative likelihood.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        Likelihood matrix P(o|s) with shape (num_obs, num_states)
+        Columns must sum to 1 (proper probability distribution)
+    zeta : float
+        Likelihood precision parameter (ζ). zeta=1 leaves A unchanged.
+        zeta>1 sharpens the distribution, zeta<1 flattens it.
+
+    Returns
+    -------
+    A_scaled : np.ndarray
+        Precision-weighted likelihood matrix (same shape as A)
+
+    Notes
+    -----
+    This implements the precision-weighting from active inference where
+    attention/precision modulates the influence of sensory evidence.
+    See Parr et al. (2022) "Active Inference" Chapter 4 and Appendix B.
+
+    Note: ζ (zeta) is used for likelihood precision to distinguish from
+    γ (gamma) which denotes policy precision in active inference.
+    """
+    log_A = np.log(A + EPS_VAL)
+    log_A_scaled = zeta * log_A
+    # Apply softmax column-wise to maintain proper probability distribution
+    A_scaled = softmax(log_A_scaled)
+    return A_scaled
+
+
+def compute_expected_log_likelihood(A, obs, qs):
+    """
+    Compute the expected log-likelihood E_{Q(s)}[ln P(o|s)] for a given observation.
+
+    This is the "accuracy" term in variational free energy, measuring how well
+    the current beliefs explain the observation.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        Likelihood matrix P(o|s) with shape (num_obs, num_states)
+    obs : int or np.ndarray
+        The observation, either as an index or one-hot vector
+    qs : np.ndarray
+        Posterior beliefs over hidden states Q(s), shape (num_states,)
+
+    Returns
+    -------
+    expected_ll : float
+        The expected log-likelihood E_{Q(s)}[ln P(o|s)]
+
+    Notes
+    -----
+    For a discrete observation o, this computes:
+        sum_s Q(s) * ln A[o, s]
+    """
+    # Handle observation as index or one-hot vector
+    if np.isscalar(obs) or (isinstance(obs, np.ndarray) and obs.ndim == 0):
+        obs_idx = int(obs)
+        log_likelihood_given_obs = np.log(A[obs_idx, :] + EPS_VAL)
+    else:
+        # One-hot observation: compute weighted log-likelihood
+        log_A = np.log(A + EPS_VAL)
+        log_likelihood_given_obs = obs @ log_A
+
+    # Expected log-likelihood under posterior beliefs
+    expected_ll = np.dot(qs, log_likelihood_given_obs)
+    return expected_ll
+
+
+def compute_sensory_prediction_error(A, obs, qs):
+    """
+    Compute sensory prediction error as the difference between observed and
+    expected observation under current beliefs.
+
+    This measures how "surprising" the observation is given current state beliefs.
+    Low prediction error = observation matches expectations = high precision appropriate.
+
+    Parameters
+    ----------
+    A : np.ndarray
+        Likelihood matrix P(o|s) with shape (num_obs, num_states)
+    obs : int or np.ndarray
+        The observation, either as an index or one-hot vector
+    qs : np.ndarray
+        Posterior beliefs over hidden states Q(s), shape (num_states,)
+
+    Returns
+    -------
+    prediction_error : float
+        Squared prediction error (always non-negative)
+    expected_obs : np.ndarray
+        Expected observation distribution P(o) = sum_s P(o|s)Q(s)
+    """
+    # Compute expected observation: P(o) = sum_s P(o|s) Q(s)
+    expected_obs = A @ qs
+
+    # Convert observation to one-hot if needed
+    if np.isscalar(obs) or (isinstance(obs, np.ndarray) and obs.ndim == 0):
+        obs_idx = int(obs)
+        actual_obs = np.zeros(A.shape[0])
+        actual_obs[obs_idx] = 1.0
+    else:
+        actual_obs = obs
+
+    # Prediction error: squared difference between actual and expected observation
+    prediction_error = np.sum((actual_obs - expected_obs) ** 2)
+
+    return prediction_error, expected_obs
+
+
+def update_likelihood_precision(
+    zeta,
+    A,
+    obs,
+    qs,
+    log_zeta_prior_mean=0.0,
+    log_zeta_prior_var=2.0,
+    zeta_step=0.25,
+    min_zeta=0.01,
+    max_zeta=10.0
+):
+    """
+    Update likelihood precision (ζ) following Equation B.45 from Parr et al. (2022).
+
+    This is the RECOMMENDED method for publication. It implements precision
+    belief updating using prediction error, faithful to Appendix B Equation B.45:
+
+        d(ln ζ)/dt = (1/2)(ε'Πε - tr(Σ⁻¹)) - prior_regularization
+
+    Where:
+    - ln(ζ) is log-precision (ensures positivity)
+    - ε'Πε is the precision-weighted squared prediction error
+    - tr(Σ⁻¹) is the expected precision under the prior
+
+    The key insight: precision should INCREASE when prediction error is LOWER
+    than expected, and DECREASE when error is HIGHER than expected.
+
+    Parameters
+    ----------
+    zeta : float
+        Current likelihood precision estimate (ζ)
+    A : np.ndarray
+        Base likelihood matrix P(o|s) with shape (num_obs, num_states)
+    obs : int or np.ndarray
+        The observation, either as an index or one-hot vector
+    qs : np.ndarray
+        Prior beliefs over hidden states Q(s), shape (num_states,)
+        NOTE: Should be PRIOR beliefs (before observing), not posterior
+    log_zeta_prior_mean : float, default=0.0
+        Prior mean for log-precision ln(ζ). Default 0.0 corresponds to ζ ≈ 1.0
+    log_zeta_prior_var : float, default=2.0
+        Prior variance for log-precision. Larger = weaker regularization,
+        allowing more deviation from prior mean. Default 2.0 gives good dynamics.
+    zeta_step : float, default=0.25
+        Step size for precision updates. Default 0.25 provides stable updates.
+    min_zeta : float, default=0.01
+        Minimum allowed precision
+    max_zeta : float, default=10.0
+        Maximum allowed precision
+
+    Returns
+    -------
+    zeta_new : float
+        Updated likelihood precision estimate
+    prediction_error : float
+        Squared prediction error ||o - A @ Q(s)||²
+    expected_error : float
+        Expected prediction error under uniform beliefs (baseline)
+
+    Notes
+    -----
+    The prediction error is computed as:
+        PE = ||o - E[o|s]||² = ||o - A @ Q(s)||²
+
+    The expected prediction error under uniform beliefs (baseline):
+        E[PE] = ||o - A @ uniform||²
+
+    The update follows B.45 exactly:
+        d(ln ζ)/dt = (1/2)(E[PE] - ζ·PE) - (ln(ζ) - μ)/σ²
+
+    Where:
+    - E[PE] = exp(μ) * baseline_PE is the expected precision-weighted error
+    - ζ·PE is the actual precision-weighted error
+    - (ln(ζ) - μ)/σ² is the prior regularization term
+
+    Tuning guidance:
+    - zeta_step ∈ [0.1, 0.5]: controls adaptation speed
+    - log_zeta_prior_var ∈ [1.0, 4.0]: controls flexibility around prior
+
+    References
+    ----------
+    Parr, T., Pezzulo, G., & Friston, K. J. (2022). Active Inference:
+    The Free Energy Principle in Mind, Brain, and Behavior. MIT Press.
+    Appendix B, Equation B.45, pp. 243-257.
+    """
+    # Convert to log-precision (ensures positivity)
+    log_zeta = np.log(zeta + EPS_VAL)
+
+    # Compute prediction error using prior beliefs
+    prediction_error, _ = compute_sensory_prediction_error(A, obs, qs)
+
+    # Compute expected prediction error (baseline under uniform beliefs)
+    num_states = len(qs)
+    uniform_qs = np.ones(num_states) / num_states
+    expected_error, _ = compute_sensory_prediction_error(A, obs, uniform_qs)
+
+    # From B.45: d(ln ζ)/dt = (1/2)(ε'Πε - tr(Σ⁻¹))
+    #
+    # We interpret:
+    # - ε'Πε ∝ ζ * prediction_error (precision-weighted actual error)
+    # - tr(Σ⁻¹) ∝ exp(log_zeta_prior_mean) * expected_error (prior expected error)
+
+    precision_weighted_error = zeta * prediction_error
+    expected_precision_weighted_error = np.exp(log_zeta_prior_mean) * expected_error
+
+    # The precision update from B.45:
+    # d(ln ζ)/dt = 0.5 * (expected - actual)
+    # When actual < expected: d(ln ζ)/dt > 0 → precision increases
+    # When actual > expected: d(ln ζ)/dt < 0 → precision decreases
+    error_drive = 0.5 * (expected_precision_weighted_error - precision_weighted_error)
+
+    # Prior regularization on log-precision (Gaussian prior)
+    prior_term = (log_zeta - log_zeta_prior_mean) / log_zeta_prior_var
+
+    # Combined update
+    d_log_zeta = error_drive - prior_term
+
+    # Gradient descent
+    log_zeta_new = log_zeta + zeta_step * d_log_zeta
+
+    # Convert back to precision
+    zeta_new = np.exp(log_zeta_new)
+    zeta_new = np.clip(zeta_new, min_zeta, max_zeta)
+
+    return zeta_new, prediction_error, expected_error
