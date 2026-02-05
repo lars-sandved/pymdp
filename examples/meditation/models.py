@@ -91,8 +91,9 @@ class ModelParams:
     # Precision dynamics
     zeta_focused: float = 2.0  # Precision when focused
     zeta_distracted: float = 0.5  # Precision when distracted
-    zeta_step: float = 0.25  # Learning rate for precision updates
-    zeta_prior_var: float = 1.0  # Prior variance on log-precision
+    zeta_step: float = 0.25  # Step size for precision updates (B.20)
+    zeta_prior: float = 1.0  # Prior mean precision (B.20)
+    zeta_prior_var: float = 1.0  # Legacy: prior variance on log-precision (unused in B.20)
     zeta_min: float = 0.1
     zeta_max: float = 5.0
 

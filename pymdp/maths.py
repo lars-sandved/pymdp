@@ -743,27 +743,49 @@ def update_likelihood_precision(
     A,
     obs,
     qs,
-    log_zeta_prior_mean=0.0,
-    log_zeta_prior_var=2.0,
+    zeta_prior=1.0,
     zeta_step=0.25,
     min_zeta=0.01,
-    max_zeta=10.0
+    max_zeta=10.0,
+    # Legacy parameters (kept for backward compatibility, but ignored)
+    log_zeta_prior_mean=None,
+    log_zeta_prior_var=None,
 ):
     """
-    Update likelihood precision (ζ) following Equation B.45 from Parr et al. (2022).
+    Update likelihood precision (ζ) following Equation B.20 from Parr et al. (2022).
 
-    This is the RECOMMENDED method for publication. It implements precision
-    belief updating using prediction error, faithful to Appendix B Equation B.45:
+    This implements precision belief updating faithful to Appendix B, Equations
+    B.18-B.20 for discrete state-space models.
 
-        d(ln ζ)/dt = (1/2)(ε'Πε - tr(Σ⁻¹)) - prior_regularization
+    The Model
+    ---------
+    The likelihood is parameterized with precision ζ using a Gibbs measure:
+
+        P(o|s, ζ) = σ(ζ ln A)  where σ is softmax
+
+    When ζ = 1: standard likelihood A
+    When ζ > 1: sharpened (more confident)
+    When ζ < 1: flattened (less confident)
+    When ζ → 0: uniform (no information from observations)
+
+    The Equations
+    -------------
+    From B.18, the expected observation under current precision is:
+
+        o^ζ = σ(ζ ln A) @ s
+
+    This is the observation we'd expect given state beliefs s and precision ζ.
+
+    From B.19-B.20, the precision update uses inverse precision β = 1/ζ:
+
+        B.19 (equilibrium):  βζ = Σ_τ (o^ζ - o) · ln A + β̃ζ
+        B.20 (dynamics):     β̇ζ = Σ_τ (o^ζ - o) · ln A + β̃ζ - βζ
 
     Where:
-    - ln(ζ) is log-precision (ensures positivity)
-    - ε'Πε is the precision-weighted squared prediction error
-    - tr(Σ⁻¹) is the expected precision under the prior
-
-    The key insight: precision should INCREASE when prediction error is LOWER
-    than expected, and DECREASE when error is HIGHER than expected.
+    - (o^ζ - o) is the prediction error (expected - actual observation)
+    - The gradient term (o^ζ - o) · ln A · s is a scalar
+    - β̃ζ = 1/ζ_prior is the prior inverse precision
+    - The update relaxes βζ toward its equilibrium value
 
     Parameters
     ----------
@@ -774,15 +796,12 @@ def update_likelihood_precision(
     obs : int or np.ndarray
         The observation, either as an index or one-hot vector
     qs : np.ndarray
-        Prior beliefs over hidden states Q(s), shape (num_states,)
-        NOTE: Should be PRIOR beliefs (before observing), not posterior
-    log_zeta_prior_mean : float, default=0.0
-        Prior mean for log-precision ln(ζ). Default 0.0 corresponds to ζ ≈ 1.0
-    log_zeta_prior_var : float, default=2.0
-        Prior variance for log-precision. Larger = weaker regularization,
-        allowing more deviation from prior mean. Default 2.0 gives good dynamics.
+        Beliefs over hidden states Q(s), shape (num_states,)
+    zeta_prior : float, default=1.0
+        Prior mean precision. The prior over ζ is a gamma distribution (B.14)
+        with mean zeta_prior. Higher values bias toward confident inference.
     zeta_step : float, default=0.25
-        Step size for precision updates. Default 0.25 provides stable updates.
+        Step size for gradient descent. Controls adaptation speed.
     min_zeta : float, default=0.01
         Minimum allowed precision
     max_zeta : float, default=10.0
@@ -792,74 +811,102 @@ def update_likelihood_precision(
     -------
     zeta_new : float
         Updated likelihood precision estimate
-    prediction_error : float
-        Squared prediction error ||o - A @ Q(s)||²
-    expected_error : float
-        Expected prediction error under uniform beliefs (baseline)
+    prediction_error : np.ndarray
+        Prediction error vector (o^ζ - o), shape (num_obs,)
+    gradient : float
+        The gradient term (o^ζ - o) · ln A · s
 
     Notes
     -----
-    The prediction error is computed as:
-        PE = ||o - E[o|s]||² = ||o - A @ Q(s)||²
+    Intuition for the update:
+    - When o^ζ ≈ o (good prediction): gradient ≈ 0, precision stays near prior
+    - When o^ζ overestimates o: gradient > 0, β increases, ζ decreases
+    - When o^ζ underestimates o: gradient < 0, β decreases, ζ increases
 
-    The expected prediction error under uniform beliefs (baseline):
-        E[PE] = ||o - A @ uniform||²
-
-    The update follows B.45 exactly:
-        d(ln ζ)/dt = (1/2)(E[PE] - ζ·PE) - (ln(ζ) - μ)/σ²
-
-    Where:
-    - E[PE] = exp(μ) * baseline_PE is the expected precision-weighted error
-    - ζ·PE is the actual precision-weighted error
-    - (ln(ζ) - μ)/σ² is the prior regularization term
-
-    Tuning guidance:
-    - zeta_step ∈ [0.1, 0.5]: controls adaptation speed
-    - log_zeta_prior_var ∈ [1.0, 4.0]: controls flexibility around prior
+    The (β̃ζ - βζ) term pulls precision toward its prior value, preventing
+    runaway precision increases or decreases.
 
     References
     ----------
     Parr, T., Pezzulo, G., & Friston, K. J. (2022). Active Inference:
     The Free Energy Principle in Mind, Brain, and Behavior. MIT Press.
-    Appendix B, Equation B.45, pp. 243-257.
+    Appendix B, Equations B.14-B.20, pp. 248-250.
     """
-    # Convert to log-precision (ensures positivity)
-    log_zeta = np.log(zeta + EPS_VAL)
+    # =========================================================================
+    # Step 1: Convert to inverse precision (beta parameterization)
+    # From B.15: ζ = βζ⁻¹, so βζ = 1/ζ
+    # =========================================================================
+    beta = 1.0 / (zeta + EPS_VAL)
+    beta_prior = 1.0 / (zeta_prior + EPS_VAL)
 
-    # Compute prediction error using prior beliefs
-    prediction_error, _ = compute_sensory_prediction_error(A, obs, qs)
+    # =========================================================================
+    # Step 2: Compute log likelihood matrix
+    # ln A is used in both the expected observation and gradient computations
+    # =========================================================================
+    log_A = np.log(A + EPS_VAL)
 
-    # Compute expected prediction error (baseline under uniform beliefs)
-    num_states = len(qs)
-    uniform_qs = np.ones(num_states) / num_states
-    expected_error, _ = compute_sensory_prediction_error(A, obs, uniform_qs)
-
-    # From B.45: d(ln ζ)/dt = (1/2)(ε'Πε - tr(Σ⁻¹))
+    # =========================================================================
+    # Step 3: Compute expected observation under current precision
+    # From B.18: o^ζ = σ(ζ ln A) @ s
     #
-    # We interpret:
-    # - ε'Πε ∝ ζ * prediction_error (precision-weighted actual error)
-    # - tr(Σ⁻¹) ∝ exp(log_zeta_prior_mean) * expected_error (prior expected error)
+    # This creates a precision-scaled likelihood:
+    # - ζ > 1: sharpens the distribution (more peaked)
+    # - ζ < 1: flattens the distribution (more uniform)
+    # - ζ = 1: original likelihood
+    #
+    # softmax is applied column-wise (over observations for each state)
+    # =========================================================================
+    scaled_log_A = zeta * log_A
+    A_zeta = softmax(scaled_log_A)  # softmax over axis=0 (observations)
+    o_expected = A_zeta @ qs  # Expected observation, shape (num_obs,)
 
-    precision_weighted_error = zeta * prediction_error
-    expected_precision_weighted_error = np.exp(log_zeta_prior_mean) * expected_error
+    # =========================================================================
+    # Step 4: Convert actual observation to one-hot vector
+    # =========================================================================
+    num_obs = A.shape[0]
+    if np.isscalar(obs) or (isinstance(obs, np.ndarray) and obs.ndim == 0):
+        o_actual = np.zeros(num_obs)
+        o_actual[int(obs)] = 1.0
+    else:
+        o_actual = np.asarray(obs)
 
-    # The precision update from B.45:
-    # d(ln ζ)/dt = 0.5 * (expected - actual)
-    # When actual < expected: d(ln ζ)/dt > 0 → precision increases
-    # When actual > expected: d(ln ζ)/dt < 0 → precision decreases
-    error_drive = 0.5 * (expected_precision_weighted_error - precision_weighted_error)
+    # =========================================================================
+    # Step 5: Compute prediction error
+    # This is the difference between expected and actual observation
+    # =========================================================================
+    prediction_error = o_expected - o_actual  # Shape (num_obs,)
 
-    # Prior regularization on log-precision (Gaussian prior)
-    prior_term = (log_zeta - log_zeta_prior_mean) / log_zeta_prior_var
+    # =========================================================================
+    # Step 6: Compute gradient term from B.20
+    # The full term is: (o^ζ - o)ᵀ @ ln(A) @ s
+    #
+    # Dimensions:
+    # - prediction_error: (num_obs,)
+    # - log_A: (num_obs, num_states)
+    # - qs: (num_states,)
+    # - Result: scalar
+    #
+    # This measures how the prediction error aligns with the log-likelihood
+    # structure, weighted by state beliefs
+    # =========================================================================
+    gradient = prediction_error @ log_A @ qs  # Scalar
 
-    # Combined update
-    d_log_zeta = error_drive - prior_term
+    # =========================================================================
+    # Step 7: Apply B.20 update rule
+    # β̇ζ = gradient + β̃ζ - βζ
+    #
+    # This is a relaxation toward equilibrium:
+    # - At equilibrium: βζ = gradient + β̃ζ
+    # - The (β̃ζ - βζ) term pulls toward prior
+    # =========================================================================
+    d_beta = gradient + beta_prior - beta
+    beta_new = beta + zeta_step * d_beta
 
-    # Gradient descent
-    log_zeta_new = log_zeta + zeta_step * d_log_zeta
+    # =========================================================================
+    # Step 8: Convert back to precision with bounds
+    # Ensure beta stays positive (equivalently, zeta stays bounded)
+    # =========================================================================
+    beta_new = np.clip(beta_new, 1.0 / max_zeta, 1.0 / min_zeta)
+    zeta_new = 1.0 / beta_new
 
-    # Convert back to precision
-    zeta_new = np.exp(log_zeta_new)
-    zeta_new = np.clip(zeta_new, min_zeta, max_zeta)
-
-    return zeta_new, prediction_error, expected_error
+    return zeta_new, prediction_error, gradient

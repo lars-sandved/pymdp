@@ -219,15 +219,14 @@ def run_figure1(
             A=A1,
             obs=obs,
             qs=prior,
-            log_zeta_prior_mean=0.0,
-            log_zeta_prior_var=params.zeta_prior_var,
+            zeta_prior=params.zeta_prior,
             zeta_step=params.zeta_step,
             min_zeta=params.zeta_min,
             max_zeta=params.zeta_max
         )
         zeta = zeta_new
         zeta_history[t] = zeta
-        prediction_errors[t] = pe
+        prediction_errors[t] = np.sum(pe**2)  # Squared prediction error (scalar)
 
         # State inference with precision-scaled likelihood
         A1_scaled = scale_likelihood(A1, zeta)
@@ -343,14 +342,13 @@ def run_figure2(
             A=A1,
             obs=obs_breath,
             qs=prior_breath,
-            # log_zeta_prior_mean defaults to 0.0 (pulls towards ζ=1)
-            log_zeta_prior_var=params.zeta_prior_var,
+            zeta_prior=params.zeta_prior,
             zeta_step=params.zeta_step,
             min_zeta=params.zeta_min,
             max_zeta=params.zeta_max
         )
         zeta_history[t] = zeta
-        prediction_errors[t] = pe
+        prediction_errors[t] = np.sum(pe**2)  # Squared prediction error (scalar)
 
         # === BREATH INFERENCE ===
         A1_scaled = scale_likelihood(A1, zeta)
@@ -492,7 +490,7 @@ def run_figure2_1(
             A=A1,
             obs=obs_breath,
             qs=prior_breath,
-            log_zeta_prior_var=params.zeta_prior_var,
+            zeta_prior=params.zeta_prior,
             zeta_step=params.zeta_step,
             min_zeta=params.zeta_min,
             max_zeta=params.zeta_max
@@ -666,7 +664,7 @@ def run_figure2_1_with_A2_precision(
             A=A1,
             obs=obs_breath,
             qs=prior_breath,
-            log_zeta_prior_var=params.zeta_prior_var,
+            zeta_prior=params.zeta_prior,
             zeta_step=params.zeta_step,
             min_zeta=params.zeta_min,
             max_zeta=params.zeta_max
@@ -806,8 +804,7 @@ def run_figure3(
             elif mode == "dynamic":
                 zeta_new, pe, _ = update_likelihood_precision(
                     zeta=zeta, A=A1_est, obs=obs, qs=prior,
-                    log_zeta_prior_mean=0.0,
-                    log_zeta_prior_var=params.zeta_prior_var,
+                    zeta_prior=params.zeta_prior,
                     zeta_step=params.zeta_step,
                     min_zeta=params.zeta_min,
                     max_zeta=params.zeta_max
@@ -830,12 +827,11 @@ def run_figure3(
                 zeta_prior = (qs_attention[FOCUSED] * params.zeta_focused +
                               qs_attention[DISTRACTED] * params.zeta_distracted)
 
-                # 5. B.45 updates zeta from prior
+                # 5. B.20 updates zeta from prior
                 zeta, pe, _ = update_likelihood_precision(
                     zeta=zeta_prior,  # Descending message sets starting point
                     A=A1_est, obs=obs, qs=prior,
-                    log_zeta_prior_mean=0.0,  # Pull towards 1
-                    log_zeta_prior_var=params.zeta_prior_var,
+                    zeta_prior=params.zeta_prior,
                     zeta_step=params.zeta_step,
                     min_zeta=params.zeta_min,
                     max_zeta=params.zeta_max
@@ -1649,14 +1645,14 @@ def run_single_learning_trajectory(
             # --- DESCENDING: TRUE attention sets zeta prior ---
             zeta_prior = params.zeta_focused if true_attention == FOCUSED else params.zeta_distracted
 
-            # --- DYNAMIC PRECISION UPDATE (B.45) ---
+            # --- DYNAMIC PRECISION UPDATE (B.20) ---
             prior_breath = B1 @ qs_breath if t > 0 else qs_breath
             zeta, pe, _ = update_likelihood_precision(
                 zeta=zeta_prior,  # Descending message
                 A=A1,
                 obs=obs_breath,
                 qs=prior_breath,
-                log_zeta_prior_var=params.zeta_prior_var,
+                zeta_prior=params.zeta_prior,
                 zeta_step=params.zeta_step,
                 min_zeta=params.zeta_min,
                 max_zeta=params.zeta_max
