@@ -80,11 +80,13 @@ class ModelParams:
     exhale_duration: float = 6.0  # Mean timesteps in exhale
 
     # Attention model (Level 2)
-    A2_precision_obs: float = 0.52  # Weak: precision obs -> attention
+    A2_precision_obs: float = 0.52  # Weak: agent's precision obs -> attention model
+    A2_true_precision: float = 0.9  # True A2 for generating precision observations
     A2_awareness_obs: float = 0.75  # Meditation instruction: awareness obs -> attention
 
     # Awareness model (Level 3)
     A3_precision: float = 0.75  # P(correct awareness obs | awareness state)
+    entropy_threshold: float = 0.5  # Threshold for awareness observation
 
     # Precision dynamics
     zeta_focused: float = 2.0  # Precision when focused
@@ -100,17 +102,20 @@ class ModelParams:
     p_switch_success: float = 0.9  # P(state flips | SWITCH)
 
     # Agent's B2 beliefs (may differ from truth)
-    B2_stay_prob: float = 0.9  # Agent's belief about STAY
+    B2_stay_prob: float = 0.52  # Agent's uncertain belief about STAY (flat)
     B2_switch_prob: float = 0.9  # Agent's belief about SWITCH toggling
 
     # Awareness dynamics (B3)
-    p_aware_to_aware: float = 0.7
-    p_unaware_to_unaware: float = 0.9
+    p_aware_to_aware: float = 0.95  # Awareness is sticky
+    p_unaware_to_unaware: float = 0.95  # Both states are sticky
 
     # Policy selection
     gamma: float = 16.0  # Policy precision
+    E_stay: float = 0.9  # Policy prior favoring STAY
 
     # Preferences
+    C_precision_precise: float = 0.0  # Preference for precise observations (focused)
+    C_precision_imprecise: float = 0.0  # Preference for imprecise observations (distracted)
     C_awareness_aware: float = 2.0  # Preference for being aware
     C_awareness_unaware: float = 0.0
 
@@ -208,29 +213,39 @@ def build_attention_model(
         A2[1] = A2_awareness
 
         C2 = utils.obj_array(2)
-        C2[0] = np.array([0.0, 0.0])  # No preference on precision obs
+        C2[0] = np.array([params.C_precision_precise, params.C_precision_imprecise])
         C2[1] = np.array([params.C_awareness_aware, params.C_awareness_unaware])
     else:
         A2 = A2_precision
-        C2 = np.array([0.0, 0.0])  # No preference without awareness
+        C2 = np.array([params.C_precision_precise, params.C_precision_imprecise])
 
     # Agent's beliefs about attention transitions
     # B2[:, :, action] = P(next_state | current_state, action)
     B2 = np.zeros((2, 2, 2))
 
-    # STAY action: agent believes state mostly persists
+    # STAY action: agent believes state mostly persists (uncertain)
     p_stay = params.B2_stay_prob
     B2[:, :, STAY] = np.array([
         [p_stay, 1 - p_stay],      # P(FOCUSED | prev, STAY)
         [1 - p_stay, p_stay],      # P(DISTRACTED | prev, STAY)
     ])
 
-    # SWITCH action: agent believes state toggles
-    p_switch = params.B2_switch_prob
-    B2[:, :, SWITCH] = np.array([
-        [1 - p_switch, p_switch],  # P(FOCUSED | prev, SWITCH)
-        [p_switch, 1 - p_switch],  # P(DISTRACTED | prev, SWITCH)
-    ])
+    # SWITCH action behavior depends on meditation instruction
+    if include_awareness_modality:
+        # Meditator KNOWS that SWITCH toggles attention state
+        # This is part of the meditation instruction
+        p_switch = params.B2_switch_prob
+        B2[:, :, SWITCH] = np.array([
+            [1 - p_switch, p_switch],  # P(FOCUSED | prev, SWITCH)
+            [p_switch, 1 - p_switch],  # P(DISTRACTED | prev, SWITCH)
+        ])
+    else:
+        # Non-meditator has UNCERTAIN beliefs about SWITCH (same as STAY)
+        # They don't know that SWITCH actually toggles state
+        B2[:, :, SWITCH] = np.array([
+            [1 - p_stay, p_stay],      # Uncertain about SWITCH effect
+            [p_stay, 1 - p_stay],
+        ])
 
     return A2, B2, C2
 
@@ -297,6 +312,30 @@ def build_environment(params: ModelParams = None) -> np.ndarray:
     ])
 
     return B2_true
+
+
+def build_A2_true(params: ModelParams = None) -> np.ndarray:
+    """
+    Build the TRUE observation model for attention (A2_true).
+
+    This is used to generate precision observations from true attention state.
+    The agent's A2 model may be weaker/uncertain (A2_precision_obs = 0.52).
+
+    Returns
+    -------
+    A2_true : np.ndarray, shape (2, 2)
+        True likelihood: P(precision_obs | attention_state)
+    """
+    if params is None:
+        params = ModelParams()
+
+    p = params.A2_true_precision
+    A2_true = np.array([
+        [p, 1 - p],      # P(PRECISE | FOCUSED), P(PRECISE | DISTRACTED)
+        [1 - p, p],      # P(IMPRECISE | FOCUSED), P(IMPRECISE | DISTRACTED)
+    ])
+
+    return A2_true
 
 
 def build_dirichlet_prior(

@@ -33,9 +33,9 @@ except ImportError:
 # Color palette
 COLORS = {
     "breath": "#2563eb",       # Blue
-    "precision": "#ea580c",    # Orange
-    "attention": "#16a34a",    # Green
-    "awareness": "#7c3aed",    # Purple
+    "precision": "#7c3aed",    # Purple
+    "attention": "#ea580c",    # Orange
+    "awareness": "#16a34a",    # Green
     "focused": "#16a34a",      # Green
     "distracted": "#dc2626",   # Red
     "true_state": "#6b7280",   # Gray
@@ -75,11 +75,10 @@ def shade_distraction_period(ax, start: int, end: int, alpha: float = 0.15):
 
 
 def save_figure(fig, save_path: str):
-    """Save figure in PNG and PDF formats."""
-    fig.savefig(save_path, dpi=300, bbox_inches="tight", facecolor='white')
+    """Save figure as PDF only."""
+    # Convert any path to PDF
     pdf_path = save_path.rsplit('.', 1)[0] + '.pdf'
     fig.savefig(pdf_path, bbox_inches="tight", facecolor='white')
-    print(f"Saved: {save_path}")
     print(f"Saved: {pdf_path}")
 
 
@@ -91,27 +90,26 @@ def plot_figure1(results: Dict[str, Any], save_path: Optional[str] = None):
     """
     Figure 1: Breath perception with dynamic precision (B.45).
 
-    Three panels:
+    Two panels:
     A) Breath state inference (posterior + true state)
     B) Dynamic precision (zeta)
-    C) Prediction error
     """
     setup_style()
 
     T = results["T"]
     t_range = np.arange(T)
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True,
-                              gridspec_kw={'height_ratios': [1, 0.8, 0.8], 'hspace': 0.15})
+    fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True,
+                              gridspec_kw={'height_ratios': [1, 0.8], 'hspace': 0.35})
 
     # Panel A: Breath state inference
     ax = axes[0]
     p_inhale = results["posteriors"][:, INHALE]
     ax.plot(t_range, p_inhale, color=COLORS["breath"], label='P(Inhaling)')
 
-    # True state as scatter
+    # True state as scatter (same color as line)
     true_inhale = 1.0 - results["true_states"]  # INHALE=0 -> 1.0
-    ax.scatter(t_range, true_inhale, s=8, color=COLORS["true_state"], alpha=0.4, label='True state')
+    ax.scatter(t_range, true_inhale, s=8, color=COLORS["breath"], alpha=0.4, label='True state')
 
     ax.set_ylabel("Probability")
     ax.set_ylim(-0.05, 1.05)
@@ -125,24 +123,14 @@ def plot_figure1(results: Dict[str, Any], save_path: Optional[str] = None):
     ax.plot(t_range, results["zeta_history"], color=COLORS["precision"])
     ax.axhline(y=1.0, color=COLORS["true_state"], linestyle='--', linewidth=1, alpha=0.6, label='Prior mean (ζ=1)')
     ax.set_ylabel("Precision (ζ)")
-    ax.set_ylim(0, max(3.0, results["zeta_history"].max() * 1.1))
+    ax.set_xlabel("Time step")
+    ax.set_ylim(0, 2.5)
+    ax.set_xlim(0, T)
     ax.legend(loc='upper right', framealpha=0.9)
     add_panel_label(ax, 'B')
-
-    # Panel C: Prediction error
-    ax = axes[2]
-    ax.plot(t_range, results["prediction_errors"], color=COLORS["attention"], alpha=0.7)
-    ax.set_ylabel("Prediction Error")
-    ax.set_xlabel("Time step")
-    ax.set_ylim(0, None)
-    add_panel_label(ax, 'C')
+    ax.set_title("Likelihood Precision Inference", fontsize=12)
 
     fig.align_ylabels(axes)
-
-    # Add accuracy annotation
-    acc = results["accuracy"]
-    fig.text(0.99, 0.01, f"Accuracy: {acc:.1%}", ha='right', va='bottom',
-             fontsize=10, color=COLORS["true_state"])
 
     if save_path:
         save_figure(fig, save_path)
@@ -159,73 +147,158 @@ def plot_figure2(results: Dict[str, Any], save_path: Optional[str] = None):
     Figure 2: Attention modulates precision.
 
     Three panels:
-    A) Breath inference quality
-    B) Precision (zeta) - showing focused vs distracted
-    C) Attention state (true)
+    A) Attention state inference (posterior line + true state dots)
+    B) Precision (zeta) with dynamic updating and descending prior from attention
+    C) Breath state inference
     """
     setup_style()
 
     T = results["T"]
     t_range = np.arange(T)
-    distraction_onset = results["distraction_onset"]
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True,
-                              gridspec_kw={'height_ratios': [1, 0.8, 0.6], 'hspace': 0.15})
+                              gridspec_kw={'height_ratios': [0.8, 0.8, 1], 'hspace': 0.35})
 
-    # Shade distraction period on all panels
-    for ax in axes:
-        shade_distraction_period(ax, distraction_onset, T)
-
-    # Panel A: Breath inference
+    # Panel A: Attention state inference
     ax = axes[0]
-    p_inhale = results["posteriors"][:, INHALE]
-    ax.plot(t_range, p_inhale, color=COLORS["breath"], label='P(Inhaling)')
-    true_inhale = 1.0 - results["true_states"]
-    ax.scatter(t_range, true_inhale, s=8, color=COLORS["true_state"], alpha=0.4, label='True state')
+    # Posterior P(Focused) as line
+    p_focused = results["attention_posteriors"][:, FOCUSED]
+    ax.plot(t_range, p_focused, color=COLORS["attention"], label='P(Focused)')
+    # True state as dots (same color as line)
+    true_attention = 1.0 - results["true_attention_states"]
+    ax.scatter(t_range, true_attention, s=8, color=COLORS["attention"], alpha=0.4, label='True state')
     ax.set_ylabel("Probability")
     ax.set_ylim(-0.05, 1.05)
     ax.set_yticks([0, 0.5, 1])
+    ax.set_xlim(0, T)
     ax.legend(loc='upper right', framealpha=0.9)
     add_panel_label(ax, 'A')
-    ax.set_title("Breath State Inference", fontsize=12)
+    ax.set_title("Attention State Inference", fontsize=12)
 
-    # Panel B: Precision
+    # Panel B: Precision (dynamic with descending prior from attention)
     ax = axes[1]
-    ax.plot(t_range, results["zeta_history"], color=COLORS["precision"])
-    ax.axhline(y=1.0, color=COLORS["true_state"], linestyle='--', linewidth=1, alpha=0.6)
+    ax.plot(t_range, results["zeta_history"], color=COLORS["precision"], label='ζ posterior')
+    ax.plot(t_range, results["zeta_prior_history"], color=COLORS["precision"], linestyle='--', alpha=0.6, label='ζ prior (↓)')
     ax.set_ylabel("Precision (ζ)")
-
-    # Add annotations
-    params = results["params"]
-    ax.annotate(f'Focused: ζ={params.zeta_focused}',
-                xy=(distraction_onset/4, params.zeta_focused),
-                fontsize=9, color=COLORS["focused"])
-    ax.annotate(f'Distracted: ζ={params.zeta_distracted}',
-                xy=(distraction_onset + T/8, params.zeta_distracted),
-                fontsize=9, color=COLORS["distracted"])
-
+    ax.set_ylim(0, 2.5)
+    ax.set_xlim(0, T)
+    ax.legend(loc='upper right', framealpha=0.9)
     add_panel_label(ax, 'B')
+    ax.set_title("Likelihood Precision Inference", fontsize=12)
 
-    # Panel C: Attention state
+    # Panel C: Breath inference
     ax = axes[2]
-    attention = results["attention_states"]
-    ax.fill_between(t_range, 0, 1, where=(attention == FOCUSED),
-                    color=COLORS["focused"], alpha=0.6, label='Focused')
-    ax.fill_between(t_range, 0, 1, where=(attention == DISTRACTED),
-                    color=COLORS["distracted"], alpha=0.6, label='Distracted')
-    ax.set_ylabel("Attention")
+    p_inhale = results["posteriors"][:, INHALE]
+    ax.plot(t_range, p_inhale, color=COLORS["breath"], label='P(Inhaling)')
+    true_inhale = 1.0 - results["true_states"]
+    ax.scatter(t_range, true_inhale, s=8, color=COLORS["breath"], alpha=0.4, label='True state')
+    ax.set_ylabel("Probability")
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_yticks([0, 0.5, 1])
+    ax.set_xlim(0, T)
     ax.set_xlabel("Time step")
-    ax.set_yticks([])
-    ax.legend(loc='upper right', framealpha=0.9, ncol=2)
+    ax.legend(loc='upper right', framealpha=0.9)
     add_panel_label(ax, 'C')
+    ax.set_title("Breath State Inference", fontsize=12)
 
     fig.align_ylabels(axes)
 
-    # Add accuracy annotations
-    fig.text(0.99, 0.01,
-             f"Focused accuracy: {results['accuracy_focused']:.1%} | "
-             f"Distracted accuracy: {results['accuracy_distracted']:.1%}",
-             ha='right', va='bottom', fontsize=10, color=COLORS["true_state"])
+    if save_path:
+        save_figure(fig, save_path)
+
+    return fig
+
+
+# =============================================================================
+# Figure 2.1: Attention with Mental Action
+# =============================================================================
+
+def plot_figure2_1(results: Dict[str, Any], save_path: Optional[str] = None):
+    """
+    Figure 2.1: Attention with mental action and natural transitions.
+
+    Four panels:
+    A) Action selection (policy inference + selected actions)
+    B) Attention state inference (posterior + true state)
+    C) Likelihood precision (zeta posterior + prior)
+    D) Breath state inference
+    """
+    setup_style()
+
+    T = results["T"]
+    t_range = np.arange(T)
+    params = results["params"]
+
+    fig, axes = plt.subplots(4, 1, figsize=(10, 9), sharex=True,
+                              gridspec_kw={'height_ratios': [0.7, 0.8, 0.8, 1], 'hspace': 0.35})
+
+    # Panel A: Action Selection
+    ax = axes[0]
+    # P(Stay) as line
+    p_stay = results["q_pi_history"][:, STAY]
+    ax.plot(t_range, p_stay, color=COLORS["awareness"], label='P(Stay)')
+
+    # Switch actions as dots at bottom
+    actions = results["actions"]
+    switch_mask = actions == SWITCH
+    ax.scatter(t_range[switch_mask], np.ones(switch_mask.sum()) * 0.05,
+               s=15, color=COLORS["switch"], alpha=0.8, marker='o', label='Switch')
+
+    ax.set_ylabel("P(Stay)")
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_yticks([0, 0.5, 1])
+    ax.set_xlim(0, T)
+    ax.legend(loc='right', framealpha=0.9, fontsize=9)
+    add_panel_label(ax, 'A')
+    ax.set_title("Mental Action Selection", fontsize=12)
+
+    # Panel B: Attention State Inference
+    ax = axes[1]
+    p_focused = results["attention_posteriors"][:, FOCUSED]
+    ax.plot(t_range, p_focused, color=COLORS["attention"], label='P(Focused)')
+    # True state as horizontal segments
+    true_attention = results["true_attention_states"]
+    true_focused = 1.0 - true_attention  # FOCUSED=0 -> 1.0, DISTRACTED=1 -> 0.0
+    ax.scatter(t_range, true_focused, s=8, color=COLORS["attention"], alpha=0.4, label='True state')
+
+    ax.set_ylabel("P(Focused)")
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_yticks([0, 0.5, 1])
+    ax.set_xlim(0, T)
+    ax.legend(loc='upper right', framealpha=0.9)
+    add_panel_label(ax, 'B')
+    ax.set_title("Attention State Inference", fontsize=12)
+
+    # Panel C: Likelihood Precision
+    ax = axes[2]
+    ax.plot(t_range, results["zeta_history"], color=COLORS["precision"], label='ζ posterior')
+    ax.plot(t_range, results["zeta_prior_history"], color=COLORS["precision"],
+            linestyle='--', alpha=0.6, label='ζ prior (↓)')
+
+    ax.set_ylabel("Precision (ζ)")
+    ax.set_ylim(0, max(2.5, params.zeta_focused + 0.5))
+    ax.set_xlim(0, T)
+    ax.legend(loc='upper right', framealpha=0.9, fontsize=9)
+    add_panel_label(ax, 'C')
+    ax.set_title("Likelihood Precision", fontsize=12)
+
+    # Panel D: Breath Perception
+    ax = axes[3]
+    p_inhale = results["posteriors"][:, INHALE]
+    ax.plot(t_range, p_inhale, color=COLORS["breath"], label='P(Inhaling)')
+    true_inhale = 1.0 - results["true_states"]
+    ax.scatter(t_range, true_inhale, s=8, color=COLORS["breath"], alpha=0.4, label='True state')
+
+    ax.set_ylabel("P(Inhaling)")
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_yticks([0, 0.5, 1])
+    ax.set_xlim(0, T)
+    ax.set_xlabel("Time step")
+    ax.legend(loc='upper right', framealpha=0.9)
+    add_panel_label(ax, 'D')
+    ax.set_title("Breath Perception", fontsize=12)
+
+    fig.align_ylabels(axes)
 
     if save_path:
         save_figure(fig, save_path)
@@ -240,72 +313,40 @@ def plot_figure2(results: Dict[str, Any], save_path: Optional[str] = None):
 def plot_figure3(
     results_fixed: Dict[str, Any],
     results_dynamic: Dict[str, Any],
-    results_attention: Dict[str, Any],
+    results_attention: Dict[str, Any] = None,
     save_path: Optional[str] = None
 ):
     """
-    Figure 3: Precision dynamics improve A1 learning.
+    Figure 3: Precision dynamics improve A1 learning across sits.
 
-    Two panels:
-    A) A1 error over time (three curves)
-    B) Final A1 matrices comparison
+    Single panel showing A1 diagonal (accuracy) over sits.
     """
     setup_style()
 
-    T = results_fixed["T"]
-    t_range = np.arange(T)
+    num_sits = results_fixed["num_sits"]
+    sit_range = np.arange(num_sits)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4),
-                              gridspec_kw={'width_ratios': [2, 1], 'wspace': 0.3})
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
 
-    # Panel A: Learning curves
-    ax = axes[0]
-    ax.plot(t_range, results_fixed["A1_error"], color=COLORS["true_state"],
-            label='Fixed ζ=1', linestyle='--')
-    ax.plot(t_range, results_dynamic["A1_error"], color=COLORS["precision"],
-            label='Dynamic ζ (B.45)')
-    ax.plot(t_range, results_attention["A1_error"], color=COLORS["focused"],
-            label='+ Attention inference')
+    # True A1 diagonal as dashed line
+    ax.axhline(y=results_fixed["A1_true_diagonal"], color=COLORS["true_state"],
+               linestyle='--', linewidth=1.5, alpha=0.8, label='True likelihood accuracy')
 
-    ax.set_xlabel("Time step")
-    ax.set_ylabel("Mean |A1 - A1_true|")
+    ax.plot(sit_range, results_fixed["A1_diagonal"], color=COLORS["true_state"],
+            label='Fixed precision ζ=1', alpha=0.7)
+    ax.plot(sit_range, results_dynamic["A1_diagonal"], color=COLORS["precision"],
+            label='Dynamic ζ')
+
+    if results_attention is not None:
+        ax.plot(sit_range, results_attention["A1_diagonal"], color=COLORS["attention"],
+                label='Dynamic ζ with attention inference')
+
+    ax.set_xlabel("Sit")
+    ax.set_ylabel("Likelihood accuracy")
     ax.set_title("Likelihood Learning Convergence", fontsize=12)
-    ax.legend(loc='upper right', framealpha=0.9)
-    ax.set_ylim(0, None)
-    add_panel_label(ax, 'A')
-
-    # Panel B: Final A1 comparison (bar chart)
-    ax = axes[1]
-
-    A1_true = results_fixed["A1_true"]
-    A1_fixed = results_fixed["A1_history"][-1]
-    A1_dynamic = results_dynamic["A1_history"][-1]
-    A1_attention = results_attention["A1_history"][-1]
-
-    # Show diagonal elements (correct observation probabilities)
-    x = np.arange(3)
-    width = 0.2
-
-    true_diag = (A1_true[0, 0] + A1_true[1, 1]) / 2
-    fixed_diag = (A1_fixed[0, 0] + A1_fixed[1, 1]) / 2
-    dynamic_diag = (A1_dynamic[0, 0] + A1_dynamic[1, 1]) / 2
-    attention_diag = (A1_attention[0, 0] + A1_attention[1, 1]) / 2
-
-    bar_colors = [COLORS["true_state"], COLORS["true_state"],
-                  COLORS["precision"], COLORS["focused"]]
-    bar_alphas = [1.0, 0.5, 0.8, 0.8]
-    bar_values = [true_diag, fixed_diag, dynamic_diag, attention_diag]
-    bar_labels = ['True', 'Fixed ζ', 'Dynamic ζ', '+ Attention']
-
-    for i, (label, val, color, alpha) in enumerate(zip(bar_labels, bar_values, bar_colors, bar_alphas)):
-        ax.bar(i, val, color=color, alpha=alpha)
-
-    ax.set_xticks(range(len(bar_labels)))
-    ax.set_xticklabels(bar_labels)
-    ax.set_ylabel("A1 diagonal (accuracy)")
-    ax.set_title("Final Learned A1", fontsize=12)
+    ax.legend(loc='lower right', framealpha=0.9)
     ax.set_ylim(0.5, 1.0)
-    add_panel_label(ax, 'B', x=-0.15)
+    ax.set_xlim(0, num_sits)
 
     if save_path:
         save_figure(fig, save_path)
@@ -628,6 +669,261 @@ def plot_figures4_5_combined(
     legend_elements = [Patch(facecolor=COLORS["stay"], alpha=0.6, label='STAY'),
                        Patch(facecolor=COLORS["switch"], alpha=0.8, label='SWITCH')]
     axes[3, 1].legend(handles=legend_elements, loc='upper left', framealpha=0.9)
+
+    if save_path:
+        save_figure(fig, save_path)
+
+    return fig
+
+
+# =============================================================================
+# Figure 4: The Distraction Trap - Learning Heatmap
+# =============================================================================
+
+def plot_figure4_heatmap(
+    results: Dict[str, Any],
+    save_path: Optional[str] = None,
+    show_contours: bool = True,
+):
+    """
+    Plot heatmap showing the distraction trap.
+
+    X-axis: ω (B2 precision) - transition model precision
+    Y-axis: ζ (A2 precision) - likelihood model precision
+    Color: Final % time focused after learning
+
+    Precision parameters scale the true model:
+    - 0 = completely flat (no knowledge)
+    - 1 = matches true generative process
+
+    Shows that without sufficient initial structure, agents cannot
+    learn their way out of distraction.
+    """
+    setup_style()
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    zeta_range = results["zeta_range"]
+    omega_range = results["omega_range"]
+    data = results["final_time_focused"]
+
+    # Create heatmap
+    # Note: imshow expects (rows, cols) where rows are Y (zeta) and cols are X (omega)
+    im = ax.imshow(
+        data,
+        origin='lower',
+        aspect='auto',
+        extent=[omega_range[0], omega_range[-1], zeta_range[0], zeta_range[-1]],
+        cmap='RdYlGn',  # Red (trapped) -> Yellow -> Green (focused)
+        vmin=0,
+        vmax=1,
+    )
+
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax, label='Final % Time Focused', shrink=0.8)
+    cbar.ax.tick_params(labelsize=10)
+
+    # Labels
+    ax.set_xlabel('ω (Transition Model Precision)', fontsize=12)
+    ax.set_ylabel('ζ (Likelihood Model Precision)', fontsize=12)
+    ax.set_title('The Distraction Trap: Learning Requires Initial Structure', fontsize=14)
+
+    # Ticks
+    ax.set_xticks(np.linspace(omega_range[0], omega_range[-1], 5))
+    ax.set_yticks(np.linspace(zeta_range[0], zeta_range[-1], 5))
+
+    plt.tight_layout()
+
+    if save_path:
+        save_figure(fig, save_path)
+
+    return fig
+
+
+def plot_figure4_diagnostic(
+    results_list: list,
+    save_path: Optional[str] = None,
+):
+    """
+    Plot diagnostic within-sit dynamics for Figure 4 debugging.
+
+    Shows attention state, posterior, observations, and actions for
+    multiple (zeta, omega) parameterizations at different sit numbers.
+
+    Parameters
+    ----------
+    results_list : list
+        List of results from run_figure4_diagnostic, each with different params
+    """
+    setup_style()
+
+    n_params = len(results_list)
+    n_sits = len(results_list[0]["capture_sits"])
+
+    fig, axes = plt.subplots(n_params, n_sits, figsize=(5 * n_sits, 3.5 * n_params))
+    if n_params == 1:
+        axes = axes.reshape(1, -1)
+    if n_sits == 1:
+        axes = axes.reshape(-1, 1)
+
+    for row, results in enumerate(results_list):
+        zeta = results["zeta_A2"]
+        omega = results["omega_B2"]
+        captured = results["captured_dynamics"]
+
+        for col, sit in enumerate(results["capture_sits"]):
+            ax = axes[row, col]
+            data = captured[sit]
+
+            T = len(data["true_attention"])
+            t = np.arange(T)
+
+            # True attention state (background shading)
+            for i in range(T):
+                if data["true_attention"][i] == 1:  # DISTRACTED
+                    ax.axvspan(i - 0.5, i + 0.5, alpha=0.2, color='red', linewidth=0)
+
+            # Posterior P(focused)
+            ax.plot(t, data["qs_focused"], 'b-', linewidth=1.5, label='P(focused)')
+
+            # Reference line at 0.5
+            ax.axhline(y=0.5, color='gray', linestyle='--', alpha=0.5, linewidth=0.5)
+
+            # Observations as scatter
+            obs_colors = ['green' if o == 0 else 'orange' for o in data["obs_precision"]]
+            ax.scatter(t, data["obs_precision"] * 0.1 + 0.05, c=obs_colors, s=10, alpha=0.7)
+
+            # Switch actions as vertical lines
+            switch_times = t[data["action"] == 1]
+            for st in switch_times:
+                ax.axvline(x=st, color='purple', alpha=0.5, linewidth=1)
+
+            ax.set_ylim(-0.05, 1.05)
+            ax.set_xlim(-1, T)
+
+            if row == 0:
+                ax.set_title(f'Sit {sit + 1}', fontsize=11)
+            if col == 0:
+                ax.set_ylabel(f'ζ={zeta:.1f}, ω={omega:.1f}\nP(focused)', fontsize=10)
+            if row == n_params - 1:
+                ax.set_xlabel('Timestep', fontsize=10)
+
+            # Add A2/B2 diagonal info
+            ax.text(0.02, 0.98, f"A2d={data['A2_diagonal']:.2f}\nB2d={data['B2_stay_diag']:.2f}",
+                    transform=ax.transAxes, fontsize=8, va='top', ha='left',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    # Legend in first panel
+    axes[0, 0].legend(loc='upper right', fontsize=8)
+
+    plt.suptitle('Figure 4 Diagnostic: Within-Sit Dynamics\n'
+                 '(Red shading = distracted, Purple lines = SWITCH, Green/Orange dots = precise/imprecise obs)',
+                 fontsize=12)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92)
+
+    if save_path:
+        save_figure(fig, save_path)
+
+    return fig
+
+
+def plot_A2_precision_comparison(
+    results_list: list,
+    save_path: Optional[str] = None,
+):
+    """
+    Plot comparison of Figure 2.1 dynamics across different A2 precision values.
+
+    Shows how meta-awareness precision affects ability to maintain focus.
+    Uses Figure 2.1-style layout but with multiple columns for different A2 values.
+
+    Parameters
+    ----------
+    results_list : list
+        List of results from run_figure2_1_with_A2_precision, each with different A2 precision
+    """
+    setup_style()
+
+    n_conditions = len(results_list)
+    fig, axes = plt.subplots(4, n_conditions, figsize=(4 * n_conditions, 9), sharex='col',
+                              gridspec_kw={'height_ratios': [0.7, 0.8, 0.8, 1], 'hspace': 0.25})
+
+    if n_conditions == 1:
+        axes = axes.reshape(-1, 1)
+
+    for col, results in enumerate(results_list):
+        T = results["T"]
+        t_range = np.arange(T)
+        params = results["params"]
+        A2_prec = results["A2_precision"]
+        time_dist = results["time_distracted"]
+
+        # Panel A: Action Selection
+        ax = axes[0, col]
+        p_stay = results["q_pi_history"][:, STAY]
+        ax.plot(t_range, p_stay, color=COLORS["awareness"], label='P(Stay)')
+        actions = results["actions"]
+        switch_mask = actions == SWITCH
+        ax.scatter(t_range[switch_mask], np.ones(switch_mask.sum()) * 0.05,
+                   s=15, color=COLORS["switch"], alpha=0.8, marker='o', label='Switch')
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_yticks([0, 0.5, 1])
+        ax.set_xlim(0, T)
+        if col == 0:
+            ax.set_ylabel("P(Stay)")
+            ax.legend(loc='right', framealpha=0.9, fontsize=8)
+            add_panel_label(ax, 'A')
+        ax.set_title(f"A2 prec = {A2_prec:.2f}\n({time_dist:.0%} distracted)", fontsize=11)
+
+        # Panel B: Attention State Inference
+        ax = axes[1, col]
+        p_focused = results["attention_posteriors"][:, FOCUSED]
+        ax.plot(t_range, p_focused, color=COLORS["attention"], label='P(Focused)')
+        true_attention = results["true_attention_states"]
+        # Background shading for distraction
+        for i in range(T):
+            if true_attention[i] == DISTRACTED:
+                ax.axvspan(i - 0.5, i + 0.5, alpha=0.15, color='red', linewidth=0)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_yticks([0, 0.5, 1])
+        ax.set_xlim(0, T)
+        if col == 0:
+            ax.set_ylabel("P(Focused)")
+            ax.legend(loc='upper right', framealpha=0.9, fontsize=8)
+            add_panel_label(ax, 'B')
+
+        # Panel C: Likelihood Precision
+        ax = axes[2, col]
+        ax.plot(t_range, results["zeta_history"], color=COLORS["precision"], label='ζ posterior')
+        ax.plot(t_range, results["zeta_prior_history"], color=COLORS["precision"],
+                linestyle='--', alpha=0.6, label='ζ prior')
+        ax.set_ylim(0, max(2.5, params.zeta_focused + 0.5))
+        ax.set_xlim(0, T)
+        if col == 0:
+            ax.set_ylabel("Precision (ζ)")
+            ax.legend(loc='upper right', framealpha=0.9, fontsize=8)
+            add_panel_label(ax, 'C')
+
+        # Panel D: Breath Perception
+        ax = axes[3, col]
+        p_inhale = results["posteriors"][:, INHALE]
+        ax.plot(t_range, p_inhale, color=COLORS["breath"], label='P(Inhaling)')
+        true_inhale = 1.0 - results["true_states"]
+        ax.scatter(t_range, true_inhale, s=5, color=COLORS["breath"], alpha=0.3, label='True')
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_yticks([0, 0.5, 1])
+        ax.set_xlim(0, T)
+        ax.set_xlabel("Time step")
+        if col == 0:
+            ax.set_ylabel("P(Inhaling)")
+            ax.legend(loc='upper right', framealpha=0.9, fontsize=8)
+            add_panel_label(ax, 'D')
+
+    plt.suptitle('Effect of Meta-Awareness Precision (A2) on Attention Maintenance\n'
+                 '(Red shading = truly distracted)', fontsize=13)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92)
 
     if save_path:
         save_figure(fig, save_path)
