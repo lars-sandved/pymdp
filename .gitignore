@@ -12,3 +12,4 @@ inferactively_pymdp.egg-info
 
 # Meditation simulation outputs (local only)
 examples/meditation/outputs/
+examples/meditation/paper_narrative.md
